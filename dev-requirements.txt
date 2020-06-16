@@ -1,5 +1,5 @@
 pytest==3.2.2
-requests==2.18.4
+requests==2.20.0
 numpy==1.13.1
 scipy>=0.17.0
 scikit-learn
