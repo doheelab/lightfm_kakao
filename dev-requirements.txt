@@ -1,0 +1,9 @@
+pytest==3.2.2
+requests==2.18.4
+numpy==1.13.1
+scipy>=0.17.0
+scikit-learn
+cython==0.26.1
+bumpversion==0.5.3
+coverage==4.4.1
+pandas==0.20.3

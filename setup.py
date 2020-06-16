@@ -1,0 +1,198 @@
+# coding=utf-8
+import os
+import subprocess
+import sys
+import textwrap
+import numpy as np
+
+from setuptools import Command, Extension, setup
+from setuptools.command.test import test as TestCommand
+
+# Import version even when extensions are not yet built
+__builtins__.__LIGHTFM_SETUP__ = True
+
+compile_args = ['-ffast-math', '-O3', '-march=native', '-msse4.2']
+ENABLE_PROFILING = False
+
+if ENABLE_PROFILING:
+    define_macros = [('CYTHON_TRACE_NOGIL', '1')]
+    compiler_directives = {'linetrace': True, 'binding': True}
+else:
+    define_macros = []
+    compiler_directives = {}
+
+
+def define_extensions(use_openmp):
+
+    # There are problems with illegal ASM instructions
+    # when using the Anaconda distribution (at least on OSX).
+    # This could be because Anaconda uses its own assembler?
+    # To work around this we do not add -march=native if we
+    # know we're dealing with Anaconda
+    if 'anaconda' not in sys.version.lower():
+        compile_args.append('-march=native')
+
+    if not use_openmp:
+        print('Compiling without OpenMP support.')
+        return [
+            Extension(
+                "lightfm._lightfm_fast_no_openmp",
+                ['lightfm/_lightfm_fast_no_openmp.c'],
+                extra_compile_args=compile_args,
+                define_macros=define_macros,
+                include_dirs=[np.get_include()],
+            ),
+        ]
+    else:
+        return [
+            Extension(
+                "lightfm._lightfm_fast_openmp",
+                ['lightfm/_lightfm_fast_openmp.c'],
+                extra_link_args=["-fopenmp"],
+                extra_compile_args=compile_args + ['-fopenmp'],
+                define_macros=define_macros,
+                include_dirs=[np.get_include()],
+            ),
+        ]
+
+
+class Cythonize(Command):
+    """
+    Compile the extension .pyx files.
+    """
+
+    user_options = []
+
+    def initialize_options(self):
+        pass
+
+    def finalize_options(self):
+        pass
+
+    def generate_pyx(self):
+        openmp_import = textwrap.dedent("""
+             from cython.parallel import parallel, prange
+             cimport openmp
+        """)
+
+        lock_init = textwrap.dedent("""
+             cdef openmp.omp_lock_t THREAD_LOCK
+             openmp.omp_init_lock(&THREAD_LOCK)
+        """)
+
+        params = (
+            ('no_openmp', dict(
+                openmp_import='',
+                nogil_block='with nogil:',
+                range_block='range',
+                thread_num='0',
+                lock_init='',
+                lock_acquire='',
+                lock_release='')),
+            ('openmp', dict(
+                openmp_import=openmp_import,
+                nogil_block='with nogil, parallel(num_threads=num_threads):',
+                range_block='prange',
+                thread_num='openmp.omp_get_thread_num()',
+                lock_init=lock_init,
+                lock_acquire='openmp.omp_set_lock(&THREAD_LOCK)',
+                lock_release='openmp.omp_unset_lock(&THREAD_LOCK)')),
+        )
+
+        file_dir = os.path.join(os.path.dirname(__file__), 'lightfm')
+
+        with open(os.path.join(file_dir, '_lightfm_fast.pyx.template'), 'r') as fl:
+            template = fl.read()
+
+        for variant, template_params in params:
+            with open(os.path.join(file_dir, '_lightfm_fast_{}.pyx'.format(variant)), 'w') as fl:
+                fl.write(template.format(**template_params))
+
+    def run(self):
+        from Cython.Build import cythonize
+
+        self.generate_pyx()
+
+
+        cythonize([
+            Extension(
+                "lightfm._lightfm_fast_no_openmp",
+                ['lightfm/_lightfm_fast_no_openmp.pyx'],
+                define_macros=define_macros,
+                include_dirs=[np.get_include()],
+            ),
+            Extension(
+                "lightfm._lightfm_fast_openmp",
+                ['lightfm/_lightfm_fast_openmp.pyx'],
+                extra_link_args=['-fopenmp'],
+                define_macros=define_macros,
+                include_dirs=[np.get_include()],
+            )],
+            compiler_directives=compiler_directives,
+        )
+
+
+class Clean(Command):
+    """
+    Clean build files.
+    """
+
+    user_options = []
+
+    def initialize_options(self):
+        pass
+
+    def finalize_options(self):
+        pass
+
+    def run(self):
+        pth = os.path.dirname(os.path.abspath(__file__))
+
+        subprocess.call(['rm', '-rf', os.path.join(pth, 'build')])
+        subprocess.call(['rm', '-rf', os.path.join(pth, 'lightfm.egg-info')])
+        subprocess.call(['find', pth, '-name', 'lightfm*.pyc', '-type', 'f', '-delete'])
+        subprocess.call(['rm', os.path.join(pth, 'lightfm', '_lightfm_fast.so')])
+
+
+class PyTest(TestCommand):
+    user_options = [('pytest-args=', 'a', "Arguments to pass to py.test")]
+
+    def initialize_options(self):
+        TestCommand.initialize_options(self)
+        self.pytest_args = ['tests/']
+
+    def finalize_options(self):
+        TestCommand.finalize_options(self)
+        self.test_args = []
+        self.test_suite = True
+
+    def run_tests(self):
+        # import here, cause outside the eggs aren't loaded
+        import pytest
+        errno = pytest.main(self.pytest_args)
+        sys.exit(errno)
+
+
+use_openmp = not sys.platform.startswith('darwin') and not sys.platform.startswith('win')
+
+setup(
+    name='lightfm',
+    version='1.13.20',
+    description='LightFM recommendation model',
+    url='https://github.com/lyst/lightfm',
+    packages=['lightfm', 'lightfm.datasets'],
+    package_data={'': ['*.c']},
+    # TODO:
+    # install_requires=['numpy', 'scipy>=0.17.0', 'requests', 'pandas==0.20.3'],
+    # tests_require=['pytest', 'requests', 'scikit-learn'],
+    cmdclass={'test': PyTest, 'cythonize': Cythonize, 'clean': Clean},
+    author='Lyst Ltd (Maciej Kula)',
+    author_email='data@ly.st',
+    license='MIT',
+    classifiers=[
+        'Development Status :: 3 - Alpha',
+        'License :: OSI Approved :: MIT License',
+        'Topic :: Scientific/Engineering :: Artificial Intelligence',
+    ],
+    ext_modules=define_extensions(use_openmp)
+)

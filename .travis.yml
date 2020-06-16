@@ -1,0 +1,11 @@
+os:
+  - osx
+before_install:
+  - pip install numpy
+  - pip install scipy
+  - pip install requests
+  - pip install scikit-learn
+  - pip install pytest
+install:
+  - pip install -e .
+script: py.test tests/
